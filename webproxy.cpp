@@ -22,7 +22,7 @@
 #define PARSE_ONLY_HOST 0
 #define PARSE_ONLY_PORT 1
 
-#define TIMEOUT_SEC 1
+#define TIMEOUT_SEC 10
 #define TIMEOUT_USEC 0
 using namespace std; 
 
@@ -117,7 +117,7 @@ int send_to_client(int socket_client, const void *msg, size_t msg_len){
 
 void send_to_client_with_error_handling(int socket_client, const void *msg, size_t msg_len){
     int bytes = send_to_client(socket_client, msg, msg_len);
-    if (!bytes){
+    if (bytes <= 0){
         puts("send_to_client_with_error_handling: Failed to send GET response to client");
         string error = "HTTP/1.1 404 Not Found\r\nContent-Type text/plain\r\nContent-Length: 21\r\n\r\nStatus: 404 Not Found ";
         send_to_client(socket_client, error.c_str(), error.length());
@@ -200,9 +200,13 @@ struct hostent* get_host(vector<string> request_lines){
         // We don't have a cache for this host
         host = gethostbyname(host_str.c_str());
         host_address_cache_map->insert({host_str, host});
+        printf("get_host: added new host to cache => %s\n", host_str.c_str());
     }
-    else // Retrieve the host from the cache
+    else {
+        // Retrieve the host from the cache
         host = host_address_cache_map->find(host_str)->second;
+        printf("get_host: host exists in cache => %s\n", host_str.c_str());
+    } 
 
     // TODO unlock addmut here DONE
     host_address_cache_mutex.unlock();
@@ -296,17 +300,18 @@ int connect_to_host(int socket_client,struct hostent *host, vector<string> reque
     return socket_host;
 }
 
-int forward_request_to_host(int socket_client, struct hostent *host,vector<string> request_lines){
+int forward_request_to_host(int socket_client, struct hostent *host,char *client_request,vector<string> request_lines){
     int socket_host = connect_to_host(socket_client, host, request_lines);
     if (socket_host == -1)
         return -1; // No connection so terminate
     // Recreate the original request of the client from vector<string> to string
-    string client_request = boost::algorithm::join(request_lines, "\n");
-    int bytes = send_to_client(socket_host, client_request.c_str(), BUFF_LEN);
-    if (!bytes){
+    //printf("forward_request_to_host: client_request length = %s\n" ,client_request); //DEBUG
+    int bytes = send_to_client(socket_host, client_request, strlen(client_request));
+    if (bytes <= 0){
         file_cache_map->erase(get_file_hash_from_request(request_lines));
         string error = "HTTP/1.1 500 Internal Server Error\r\nContent-Type text/plain\r\nContent-Length: 33\r\n\r\nStatus: 500 Internal Server Error ";
         send_to_client(socket_client, error.c_str(), error.length());
+        return -1;
     }
 
     printf("forward_request_to_host: forwarded request to socket_host = %d, socket_client = %d\n", socket_host, socket_client);
@@ -328,7 +333,7 @@ void write_response_to_cache(string response, vector<string> request_lines){
     ofstream out_cache_file(filename);
     out_cache_file << response;
 }
-void send_response_from_host(int socket_client, vector<string> request_lines){
+void send_response_from_host(int socket_client, char* client_request, vector<string> request_lines){
     // There is no cache, we have to get a fresh response
     // Send a request to the destination (host), cache the response and send it to the user
     file_cache* new_cache = new file_cache(chrono::system_clock::now());
@@ -343,7 +348,7 @@ void send_response_from_host(int socket_client, vector<string> request_lines){
         send_host_blacklisted_response(socket_client);
     else
     {
-        int socket_host = forward_request_to_host(socket_client, host, request_lines); // Get response from the actual server
+        int socket_host = forward_request_to_host(socket_client, host, client_request, request_lines ); // Get response from the actual server
         if (socket_host == -1 )
             return;
         string response = get_response_from_host(socket_host);
@@ -374,11 +379,11 @@ void send_not_get_request_error(int socket_client){
 }
 void* handle_new_connection(void *socket){
     int socket_client = *(int*)socket;
-    char msg_of_client[BUFF_LEN];
+    char client_request[BUFF_LEN];
     int msgLen;
-    while ((msgLen = receive_request(socket_client, msg_of_client) > 0)){
+    while ((msgLen = receive_request(socket_client, client_request) > 0)){
         vector<string> request_lines;
-        boost::split(request_lines, msg_of_client, boost::is_any_of("\n"));
+        boost::split(request_lines, client_request, boost::is_any_of("\n"));
         //First element of msg_parts is Type of Request
         //Second is URI
         //Third is version
@@ -390,7 +395,7 @@ void* handle_new_connection(void *socket){
             if (has_valid_cache(socket_client, request_lines))
                 send_response_from_cache(socket_client, request_lines);
             else // Cache is either does not exist or timed out
-                send_response_from_host(socket_client, request_lines);
+                send_response_from_host(socket_client, client_request,request_lines);
         }
         
     }
