@@ -15,6 +15,8 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <pthread.h>
+#include <stdio.h> 
+#include <thread> 
 
 
 #define MAX_CONNECTIONS 15
@@ -24,8 +26,7 @@
 
 #define TIMEOUT_SEC 10
 #define TIMEOUT_USEC 0
-using namespace std; 
-
+using namespace std;
 struct file_cache 
 {
     chrono::system_clock::time_point time_of_creation;
@@ -80,7 +81,7 @@ int create_proxy_socket(){
     int enable_reuse = 1;
     if (setsockopt(socket_proxy, SOL_SOCKET, SO_REUSEADDR, &enable_reuse, sizeof(int)) < 0)
         exit_with_msg("create_proxy_socket: SO_REUSEADDR failed\n");
-    puts("create_proxy_socket: Created a socket"); // DEBUG
+    //puts("create_proxy_socket: Created a socket"); // DEBUG
 
     return socket_proxy;
 }
@@ -93,16 +94,17 @@ struct sockaddr_in create_proxy_sockaddr(int socket_proxy){
 
     if (bind(socket_proxy, (struct sockaddr*)&proxy, sizeof(proxy)) < 0)
         exit_with_msg("create_proxy_sockaddr: failed to bind\n");
-    puts ("create_proxy_sockaddr: Bind done");
+    //puts ("create_proxy_sockaddr: Bind done"); // DEBUG
     return proxy;
 }
 
 int receive_request(int socket_client, char *msg){
     int recv_len = recv(socket_client, msg, BUFF_LEN, 0);
-    if (recv_len == 0)
-        puts("receive_request: client disconnected\n");
-    else if (recv_len == -1)
-        puts("receive_request: recv failed\n");
+    //if (recv_len == 0)
+        //puts("receive_request: client disconnected\n"); // DEBUG
+    //else
+     if (recv_len == -1)
+        puts("receive_request: recv failed\n"); 
     return recv_len;
 
 }
@@ -133,7 +135,7 @@ bool is_cache_timed_out(file_cache* cache_entry){
 size_t get_file_hash_from_request(vector<string> request_lines) {
     vector<string> get_request_parts;
     boost::split(get_request_parts, (char*)request_lines[0].c_str(), boost::is_any_of(" "));
-
+    //printf("get_file_hash_from_request, file_name=%s\n", get_request_parts[1].c_str()); // DEBUG
     return hasher(get_request_parts[1]);
 }
 
@@ -197,12 +199,12 @@ struct hostent* get_host(vector<string> request_lines){
         // We don't have a cache for this host
         host = gethostbyname(host_str.c_str());
         host_address_cache_map->insert({host_str, host});
-        printf("get_host: added new host to cache => %s\n", host_str.c_str());
+        //printf("get_host: added new host to cache => %s\n", host_str.c_str()); // DEBUG
     }
     else {
         // Retrieve the host from the cache
         host = host_address_cache_map->find(host_str)->second;
-        printf("get_host: host exists in cache => %s\n", host_str.c_str());
+        //printf("get_host: host exists in cache => %s\n", host_str.c_str()); // DEBUG
     } 
 
     host_address_cache_mutex.unlock();
@@ -292,11 +294,11 @@ int connect_to_host(int socket_client,struct hostent *host, vector<string> reque
             return -1;
     }
     
-    printf("connect_to_host: Connected to host sucessfully, socket_host=%d, socket_client=%d\n", socket_host, socket_client);
+    //printf("connect_to_host: Connected to host sucessfully, socket_host=%d, socket_client=%d\n", socket_host, socket_client); // DEBUG
     return socket_host;
 }
 
-int forward_request_to_host(int socket_client, struct hostent *host,char *client_request,vector<string> request_lines){
+int forward_request_to_host(int socket_client, struct hostent *host,const char *client_request,vector<string> request_lines){
     int socket_host = connect_to_host(socket_client, host, request_lines);
     if (socket_host == -1)
         return -1; // No connection so terminate
@@ -310,7 +312,7 @@ int forward_request_to_host(int socket_client, struct hostent *host,char *client
         return -1;
     }
 
-    printf("forward_request_to_host: forwarded request to socket_host = %d, socket_client = %d\n", socket_host, socket_client);
+    //printf("forward_request_to_host: forwarded request to socket_host = %d, socket_client = %d\n", socket_host, socket_client); // DEBUG
     return socket_host;
 }
 
@@ -325,11 +327,70 @@ string get_response_from_host(int socket_host){
 void write_response_to_cache(string response, vector<string> request_lines){
     char filename[50];
     sprintf(filename, "cache/%u.txt", (unsigned int)get_file_hash_from_request(request_lines));
-    printf("write_response_to_cache: Caching to file %s\n", filename); // DEBUG
+    //printf("write_response_to_cache: Caching to file %s\n", filename); // DEBUG
     ofstream out_cache_file(filename);
     out_cache_file << response;
 }
-void send_response_from_host(int socket_client, char* client_request, vector<string> request_lines){
+
+struct prefetch_args {
+     const char* main_page;
+     const char* base_host;
+};
+
+bool is_a_url(string file_to_be_fetched){
+    // Does it start or http or https
+    return file_to_be_fetched.substr(0, 4).compare("http") == 0
+        || file_to_be_fetched.substr(0, 5).compare("https") == 0;
+}
+
+string parse_host_from_url(string url){
+    // http://netsys.cs.colorado.edu/favicon.ico
+    // https://tools.ietf.org/html/rfc8312.txt
+    // We want to extract
+    // netsys.cs.colorado.edu
+    int index_of_first_slash = url.find_first_of("/");
+    return url.substr(index_of_first_slash+2, url.find_first_of("/", index_of_first_slash+2) - (index_of_first_slash + 2));
+}
+void prefetch(string file_path, string host, string client_request, int socket_client) {
+    printf("prefetch: no modification client_request, \n-------\n%s\n-------\n", client_request.c_str());
+
+    string prefetch_request = "GET " + file_path;
+    handle_client_request(socket_client, prefetch_request.c_str());
+    /*printf("prefetch: file_path=%s, host=%s\n", file_path.c_str(), host.c_str());
+    //int get_index = client_request.find_first_of("GET");
+    //client_request.erase(get_index+4, (client_request.find_first_of(" ", get_index+4) - (get_index+4)));
+    //client_request.insert(get_index+4, file_path);
+    //printf("prefetch: after replacing GET, client_request=\n-----------\n%s\n--------\n", client_request.c_str());
+    int host_index = client_request.find_first_of("Host:");
+    client_request.erase(host_index+5, (client_request.find_first_of(" ", host_index+5) - (host_index + 5)));
+    //client_request.insert(host_index+5,host);
+    printf("prefetch: after replacing host, client_request=\n-----------\n%s\n--------\n", client_request.c_str());
+    */
+
+}
+void handle_prefetching(string host, string response, string client_request, int socket_client){
+    //printf("handle_prefetching: Inside prefetch thread\n"); // DEBUG
+    // Example
+    // <a href="images/wine3.jpg">JPG</a> 
+    int i = 0;
+    int href_index = 0;
+    //printf("handle_prefetching: response=%s\n", response.c_str()); // DEBUG
+    while((href_index=response.find("<a href=", i)) != -1){
+        int first_quote_index = response.find_first_of("\"", href_index);
+        int second_quote_index = response.find_first_of("\"", first_quote_index+1);
+        string href_link_str = response.substr(first_quote_index+1, (second_quote_index-first_quote_index-1));
+        if (is_a_url(href_link_str))
+            prefetch(href_link_str, parse_host_from_url(href_link_str), client_request, socket_client);
+        else
+            prefetch(host + "/" + href_link_str, host, client_request, socket_client);
+
+        i = second_quote_index;
+    }
+    
+    //return 0;
+}
+
+void send_response_from_host(int socket_client, const char* client_request, vector<string> request_lines){
     // There is no cache, we have to get a fresh response
     // Send a request to the destination (host), cache the response and send it to the user
     file_cache* new_cache = new file_cache(chrono::system_clock::now());
@@ -346,8 +407,11 @@ void send_response_from_host(int socket_client, char* client_request, vector<str
         int socket_host = forward_request_to_host(socket_client, host, client_request, request_lines ); // Get response from the actual server
         if (socket_host == -1 )
             return;
+        // Extra credit: prefetching
         string response = get_response_from_host(socket_host);
-        printf("send_response_from_host: Received response from socket_host=%d. Will proceed to write it to cache \n", socket_host);
+        thread prefetch_thread(handle_prefetching, host->h_name, response, client_request,socket_client);
+        prefetch_thread.detach();
+       // printf("send_response_from_host: Received response from socket_host=%d. Will proceed to write it to cache \n", socket_host); // DEBUG
         write_response_to_cache(response, request_lines);
         new_cache -> time_of_creation = chrono::system_clock::now();
         new_cache ->file_mutex.unlock();
@@ -366,16 +430,13 @@ bool is_not_get_request(vector<string> request_lines){
 void send_not_get_request_error(int socket_client){
     // If this request is anything else but GET
     // The GET requests is processed in handle_new_connection
-    puts("Received a request that is not GET. Will reply with 400 Bad Request"); // DEBUG
+    //puts("Received a request that is not GET. Will reply with 400 Bad Request"); // DEBUG
     string error_msg = "HTTP/1.1 400 Bad Request\r\nContent-Type text/plain\r\nContent-Length: 23\r\n\r\nStatus: 400 Bad Request ";
     send_to_client(socket_client, error_msg.c_str(), error_msg.length());
 }
-void* handle_new_connection(void *socket){
-    int socket_client = *(int*)socket;
-    char client_request[BUFF_LEN];
-    int msgLen;
-    while ((msgLen = receive_request(socket_client, client_request) > 0)){
-        vector<string> request_lines;
+
+void handle_client_request(int socket_client, const char *client_request){
+    vector<string> request_lines;
         boost::split(request_lines, client_request, boost::is_any_of("\n"));
         //First element of msg_parts is Type of Request
         //Second is URI
@@ -390,6 +451,14 @@ void* handle_new_connection(void *socket){
             else // Cache is either does not exist or timed out
                 send_response_from_host(socket_client, client_request,request_lines);
         }
+}
+void* handle_new_connection(void *socket){
+    int socket_client = *(int*)socket;
+    char client_request[BUFF_LEN];
+    int msgLen;
+    while ((msgLen = receive_request(socket_client, client_request) > 0)){
+        //printf("handle_new_connection: client_request=%s\n", client_request); // DEBUG
+        handle_client_request(socket_client, client_request);
         
     }
 
@@ -406,7 +475,7 @@ void accept_incoming_connections(int socket_proxy, struct sockaddr_in proxy){
     int client_size = sizeof(struct sockaddr_in);
     int socket_client;
     while ((socket_client = accept(socket_proxy, (struct sockaddr *) &client, (socklen_t*)&client_size))){
-        puts ("accept_incoming_connections: New connection accepted"); // DEBUG
+        //puts ("accept_incoming_connections: New connection accepted"); // DEBUG
         pthread_t new_connection_thread;
         int *socket_copied = (int*)malloc(1);
         *socket_copied = socket_client;
