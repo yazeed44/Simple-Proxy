@@ -1,4 +1,3 @@
-
 #include <cstdio>
 #include <stdlib.h> 
 #include <fstream>
@@ -15,6 +14,7 @@
 #include <unordered_map>
 #include <unistd.h>
 #include <netdb.h>
+#include <pthread.h>
 
 
 #define MAX_CONNECTIONS 5
@@ -49,7 +49,7 @@ mutex file_cache_mutex;
 // Address cache stuff
 unordered_map <string, hostent*>* host_address_cache_map = new unordered_map<string, hostent*> ();
 mutex host_address_cache_mutex;
-void exit_with_msg(char* msg){
+void exit_with_msg(const char* msg){
     perror(msg);
     // TODO close sockets
     exit(EXIT_FAILURE);
@@ -64,18 +64,13 @@ void init_server_parameters(char* argv[]){
     port_number = atoi(argv[1]);
 }
 
-void clear_old_cache(){
-    if (!system("exec rm -r cache/*"))
-        exit_with_msg("Error deleting cache. Aborting\n");
-}
-
 void init_blacklist(){
     ifstream file("blacklist.txt");
     stringstream stream;
     string s(stream.str());
     if (stream.str() != "")
-        boost::split(blacklist, (char*)s.c_str(), "\n");
-    printf("Parsed %d sites in the blacklist", (int)blacklist.size()); // DEBUG
+        boost::split(blacklist, (char*)s.c_str(), boost::is_any_of("\n"));
+    printf("Parsed %d sites in the blacklist\n", (int)blacklist.size()); // DEBUG
 }
 
 int create_proxy_socket(){
@@ -87,16 +82,19 @@ int create_proxy_socket(){
     if (setsockopt(socket_proxy, SOL_SOCKET, SO_REUSEADDR, &enable_reuse, sizeof(int)) < 0)
         exit_with_msg("create_proxy_socket: SO_REUSEADDR failed\n");
     puts("create_proxy_socket: Created a socket"); // DEBUG
+
+    return socket_proxy;
 }
 
 struct sockaddr_in create_proxy_sockaddr(int socket_proxy){
     struct sockaddr_in proxy;
     proxy.sin_family = AF_INET;
     proxy.sin_addr.s_addr = INADDR_ANY;
-    proxy.sin_port = port_number;
+    proxy.sin_port = htons(port_number);
 
     if (bind(socket_proxy, (struct sockaddr*)&proxy, sizeof(proxy)) < 0)
         exit_with_msg("create_proxy_sockaddr: failed to bind\n");
+    puts ("create_proxy_sockaddr: Bind done");
     return proxy;
 }
 
@@ -122,7 +120,7 @@ void send_to_client_with_error_handling(int socket_client, const void *msg, size
     if (!bytes){
         puts("send_to_client_with_error_handling: Failed to send GET response to client");
         string error = "HTTP/1.1 404 Not Found\r\nContent-Type text/plain\r\nContent-Length: 21\r\n\r\nStatus: 404 Not Found ";
-        send_to_client(socket_client, error.c_str(), error.length);
+        send_to_client(socket_client, error.c_str(), error.length());
     }
 }
 bool is_cache_timed_out(file_cache* cache_entry){
@@ -135,7 +133,7 @@ bool is_cache_timed_out(file_cache* cache_entry){
 
 size_t get_file_hash_from_request(vector<string> request_lines) {
     vector<string> get_request_parts;
-    boost::split(get_request_parts, (char*)request_lines[0].c_str(), " ");
+    boost::split(get_request_parts, (char*)request_lines[0].c_str(), boost::is_any_of(" "));
 
     return hasher(get_request_parts[1]);
 }
@@ -180,7 +178,7 @@ string parse_host(vector<string> request_lines, int option){
         if (!strncmp(request_line.c_str(), "Host:", 5))
             host = request_line.substr(6, request_line.length() -6 - 1);
     vector<string> host_splitted;
-    boost::split(host_splitted, host, ":");
+    boost::split(host_splitted, host, boost::is_any_of(":"));
     if (option == PARSE_ONLY_HOST)
         return host_splitted[0]; // return only host 
     else if (host_splitted.size() == 2)
@@ -276,7 +274,7 @@ int connect_to_host(int socket_client,struct hostent *host, vector<string> reque
     struct sockaddr_in sockaddr_host;
     memset(&sockaddr_host, 0, sizeof(sockaddr_host));
     sockaddr_host.sin_family = AF_INET;
-    sockaddr_host.sin_port = stoi(parse_host(request_lines, PARSE_ONLY_PORT));
+    sockaddr_host.sin_port = htons(stoi(parse_host(request_lines, PARSE_ONLY_PORT)));
     memcpy(&sockaddr_host.sin_addr, host->h_addr, host->h_length);
     int socket_host = create_proxy_socket();
     setup_timeout_for_socket(socket_host);
@@ -284,9 +282,7 @@ int connect_to_host(int socket_client,struct hostent *host, vector<string> reque
         {
             handle_failed_host_socket(socket_client, socket_host, request_lines);
             return -1;
-        } 
-        
-    
+        }
     else if (connect(socket_host, (struct sockaddr*) &sockaddr_host, sizeof(sockaddr_host)) < 0) {
             handle_failed_connection_to_host(socket_client, socket_host, request_lines);
             return -1;
@@ -322,7 +318,7 @@ string get_response_from_host(int socket_client, int socket_host, vector<string>
 void write_response_to_cache(string response, vector<string> request_lines){
     char filename[50];
     sprintf(filename, "cache/%u.txt", (unsigned int)get_file_hash_from_request(request_lines));
-    printf("Caching to file %s\n", filename); // DEBUG
+    printf("write_response_to_cache: Caching to file %s\n", filename); // DEBUG
     ofstream out_cache_file(filename);
     out_cache_file << response;
 }
@@ -349,6 +345,7 @@ void send_response_from_host(int socket_client, vector<string> request_lines){
         write_response_to_cache(response, request_lines);
         new_cache -> time_of_creation = chrono::system_clock::now();
         new_cache ->file_mutex.unlock();
+        send_to_client_with_error_handling(socket_client, response.c_str(), response.length());
     }
     
     // TODO lock mapmut DONE
@@ -375,7 +372,7 @@ void* handle_new_connection(void *socket){
     int msgLen;
     while ((msgLen = receive_request(socket_client, msg_of_client) > 0)){
         vector<string> request_lines;
-        boost::split(request_lines, msg_of_client, "\n");
+        boost::split(request_lines, msg_of_client, boost::is_any_of("\n"));
         //First element of msg_parts is Type of Request
         //Second is URI
         //Third is version
@@ -392,21 +389,22 @@ void* handle_new_connection(void *socket){
                 send_response_from_host(socket_client, request_lines);
         }
         
-        
-        
     }
 
     free(socket);
+
+    return 0;
 }
 void accept_incoming_connections(int socket_proxy, struct sockaddr_in proxy){
-    listen(socket_proxy, MAX_CONNECTIONS);
-
+    int listen_result = listen(socket_proxy, MAX_CONNECTIONS);
+    if (listen_result != 0)
+        exit_with_msg("accept_incoming_connections: failed to listen\n");
     puts("Waiting for connections"); // DEBUG
     struct sockaddr_in client;
     int client_size = sizeof(struct sockaddr_in);
     int socket_client;
     while ((socket_client = accept(socket_proxy, (struct sockaddr *) &client, (socklen_t*)&client_size))){
-        puts ("New connection accepted"); // DEBUG
+        puts ("accept_incoming_connections: New connection accepted"); // DEBUG
         pthread_t new_connection_thread;
         int *socket_copied = (int*)malloc(1);
         *socket_copied = socket_client;
@@ -419,7 +417,6 @@ void accept_incoming_connections(int socket_proxy, struct sockaddr_in proxy){
 int main(int argc, char* argv[]){
     check_arguments(argc);
     init_server_parameters(argv);
-    clear_old_cache();
     init_blacklist();
     int socket_proxy = create_proxy_socket();
     struct sockaddr_in proxy = create_proxy_sockaddr(socket_proxy);
