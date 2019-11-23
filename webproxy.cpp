@@ -66,10 +66,9 @@ void init_server_parameters(char* argv[]){
 
 void init_blacklist(){
     ifstream file("blacklist.txt");
-    stringstream stream;
-    string s(stream.str());
-    if (stream.str() != "")
-        boost::split(blacklist, (char*)s.c_str(), boost::is_any_of("\n"));
+    string line;
+    while(getline(file, line))
+        blacklist.push_back(line);
     printf("Parsed %d sites in the blacklist\n", (int)blacklist.size()); // DEBUG
 }
 
@@ -111,7 +110,7 @@ int receive_request(int socket_client, char *msg){
 int send_to_client(int socket_client, const void *msg, size_t msg_len){
     int write_bytes = write(socket_client, msg, msg_len);
     if (write_bytes <= 0)
-        printf("send_to_client: Failed to send msg = %s\n", msg);
+        printf("send_to_client: Failed to send msg = %s\n", (const char*)msg);
     return write_bytes;
 }
 
@@ -157,7 +156,6 @@ bool has_valid_cache(int socket_client, vector<string> request_lines){
 void send_response_from_cache(int socket_client, vector<string> request_lines){
     size_t file_hash = get_file_hash_from_request(request_lines);
     auto cache_entry = file_cache_map -> find(file_hash);
-    file_cache_mutex.unlock();
 
     cache_entry -> second -> file_mutex.lock();
     
@@ -193,7 +191,6 @@ string parse_host(vector<string> request_lines, int option){
 
 struct hostent* get_host(vector<string> request_lines){
     string host_str = parse_host(request_lines, PARSE_ONLY_HOST);
-    // TODO lock addmut here DONE
     host_address_cache_mutex.lock();
     struct hostent* host;
     if (host_address_cache_map -> find(host_str) == host_address_cache_map -> end()){
@@ -208,7 +205,6 @@ struct hostent* get_host(vector<string> request_lines){
         printf("get_host: host exists in cache => %s\n", host_str.c_str());
     } 
 
-    // TODO unlock addmut here DONE
     host_address_cache_mutex.unlock();
     return host;
 }
@@ -338,7 +334,6 @@ void send_response_from_host(int socket_client, char* client_request, vector<str
     // Send a request to the destination (host), cache the response and send it to the user
     file_cache* new_cache = new file_cache(chrono::system_clock::now());
 
-    // TODO unlock map mutex here DONE
     new_cache->file_mutex.lock();
     struct hostent* host = get_host(request_lines);
 
@@ -359,10 +354,8 @@ void send_response_from_host(int socket_client, char* client_request, vector<str
         send_to_client_with_error_handling(socket_client, response.c_str(), response.length());
     }
     
-    // TODO lock mapmut DONE
     file_cache_mutex.lock();
     file_cache_map->insert({get_file_hash_from_request(request_lines), new_cache});
-    // TODO unlock mapmut DONE
     file_cache_mutex.unlock();
 }
 
