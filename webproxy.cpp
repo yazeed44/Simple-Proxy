@@ -17,12 +17,12 @@
 #include <pthread.h>
 
 
-#define MAX_CONNECTIONS 5
+#define MAX_CONNECTIONS 15
 #define BUFF_LEN    1024
 #define PARSE_ONLY_HOST 0
 #define PARSE_ONLY_PORT 1
 
-#define TIMEOUT_SEC 3
+#define TIMEOUT_SEC 1
 #define TIMEOUT_USEC 0
 using namespace std; 
 
@@ -157,15 +157,19 @@ bool has_valid_cache(int socket_client, vector<string> request_lines){
 void send_response_from_cache(int socket_client, vector<string> request_lines){
     size_t file_hash = get_file_hash_from_request(request_lines);
     auto cache_entry = file_cache_map -> find(file_hash);
+    file_cache_mutex.unlock();
+
     cache_entry -> second -> file_mutex.lock();
-    //TODO lock map mutex here DONE
-    file_cache_mutex.lock();
+    
+    
+    
     char file_name[50];
     sprintf(file_name, "cache/%u.txt", (unsigned int)file_hash);
     ifstream cache_file(file_name);
     stringstream cache_stream;
     cache_stream << cache_file.rdbuf();
-    printf("Read from cache file %u.txt \n", (unsigned int) file_hash); // DEBUG
+    cache_entry -> second -> file_mutex.unlock();
+    printf("Read from cache file %u.txt for socket_client = %d \n", (unsigned int) file_hash, socket_client); // DEBUG
     string response = cache_stream.str();
     send_to_client_with_error_handling(socket_client, response.c_str(), response.length());
 }
@@ -288,10 +292,11 @@ int connect_to_host(int socket_client,struct hostent *host, vector<string> reque
             return -1;
     }
     
+    printf("connect_to_host: Connected to host sucessfully, socket_host=%d, socket_client=%d\n", socket_host, socket_client);
     return socket_host;
 }
 
-int send_fresh_response_from_host(int socket_client, struct hostent *host,vector<string> request_lines){
+int forward_request_to_host(int socket_client, struct hostent *host,vector<string> request_lines){
     int socket_host = connect_to_host(socket_client, host, request_lines);
     if (socket_host == -1)
         return -1; // No connection so terminate
@@ -304,10 +309,11 @@ int send_fresh_response_from_host(int socket_client, struct hostent *host,vector
         send_to_client(socket_client, error.c_str(), error.length());
     }
 
+    printf("forward_request_to_host: forwarded request to socket_host = %d, socket_client = %d\n", socket_host, socket_client);
     return socket_host;
 }
 
-string get_response_from_host(int socket_client, int socket_host, vector<string> request_parts){
+string get_response_from_host(int socket_host){
     string response;
     char c; // We will get response character by character
     while(read(socket_host, &c, 1))
@@ -328,7 +334,6 @@ void send_response_from_host(int socket_client, vector<string> request_lines){
     file_cache* new_cache = new file_cache(chrono::system_clock::now());
 
     // TODO unlock map mutex here DONE
-    file_cache_mutex.unlock();
     new_cache->file_mutex.lock();
     struct hostent* host = get_host(request_lines);
 
@@ -338,10 +343,11 @@ void send_response_from_host(int socket_client, vector<string> request_lines){
         send_host_blacklisted_response(socket_client);
     else
     {
-        int socket_host = send_fresh_response_from_host(socket_client, host, request_lines); // Get response from the actual server
+        int socket_host = forward_request_to_host(socket_client, host, request_lines); // Get response from the actual server
         if (socket_host == -1 )
             return;
-        string response = get_response_from_host(socket_client, socket_host, request_lines);
+        string response = get_response_from_host(socket_host);
+        printf("send_response_from_host: Received response from socket_host=%d. Will proceed to write it to cache \n", socket_host);
         write_response_to_cache(response, request_lines);
         new_cache -> time_of_creation = chrono::system_clock::now();
         new_cache ->file_mutex.unlock();
@@ -381,8 +387,6 @@ void* handle_new_connection(void *socket){
         
         else {
             // It's a GET request
-            //TODO lock map mutex here DONE
-            file_cache_mutex.lock();
             if (has_valid_cache(socket_client, request_lines))
                 send_response_from_cache(socket_client, request_lines);
             else // Cache is either does not exist or timed out
