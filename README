@@ -1,9 +1,7 @@
 name: Yazeed Almuqwishi
 
-First we need to download boost libraries, run these commands:
-wget https://dl.bintray.com/boostorg/release/1.71.0/source/boost_1_71_0.tar.gz && tar-xvzf boost_1_71_0.tar.gz
 
-then you compile and run the program: 
+you compile and run the program: 
 
 rm  cache/* ;reset && make clean && make && ./webproxy <port_number> <cache_timeout>
 
