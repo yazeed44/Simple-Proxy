@@ -1,0 +1,41 @@
+name: Yazeed Almuqwishi
+
+First we need to download boost libraries, run these commands:
+wget https://dl.bintray.com/boostorg/release/1.71.0/source/boost_1_71_0.tar.gz && tar-xvzf boost_1_71_0.tar.gz
+
+then you compile and run the program: 
+
+rm  cache/* ;reset && make clean && make && ./webproxy <port_number> <cache_timeout>
+
+set your browser to use this port number with all protocols
+
+We can look at the response in the browser using the dev console
+
+How it works:
+    First there's two mutexes for cache of files and cache of addresses
+    
+        if hash_of_file is not in the map of files_cache or past its due
+            remove entry from map it's past its due
+            
+            create new struct for new cache
+            access that mutex within the struct and lock it
+            
+            unlock files_cache_mutex
+            
+            get response from actual server
+            write response to cache
+            forward response to client
+            update entry in cache map to hold the time of creation for that response
+            
+            unlock mutex of the new cache
+            
+        else we have cache
+            calculate file hash
+            look for the file that holds this hash within the map of caches
+            lock that file mutex
+            read the buffer
+            unlock that file mutex
+            send the buffer to client
+
+How link prefetching works:
+	For every new response (not from cache) we look for <a href, inside that file, and if there's one, we extract the link and create a new request to download that link. Note: We only prefetch when the contents of that href is from the same website             
