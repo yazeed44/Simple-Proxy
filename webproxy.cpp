@@ -7,7 +7,6 @@
 #include <string>
 #include <vector>
 #include <bits/stdc++.h> 
-#include <boost/algorithm/string.hpp>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <chrono>
@@ -74,6 +73,18 @@ void init_blacklist(){
     //printf("Parsed %d sites in the blacklist\n", (int)blacklist.size()); // DEBUG
 }
 
+vector<string> split(const char* input, string delimeter){
+    vector<string> output;
+    string input_str = string(input);
+    for(int i = 0; (i = input_str.find(delimeter)) != -1; )
+    {
+        output.push_back(input_str.substr(0, i));
+        input_str.erase(0, i + delimeter.length());
+    }
+    output.push_back(input_str);
+    return output;
+}
+
 int create_proxy_socket(){
     int socket_proxy = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_proxy == -1)
@@ -134,8 +145,7 @@ bool is_cache_timed_out(file_cache* cache_entry){
 }
 
 size_t get_file_hash_from_request(vector<string> request_lines) {
-    vector<string> get_request_parts;
-    boost::split(get_request_parts, (char*)request_lines[0].c_str(), boost::is_any_of(" "));
+    vector<string> get_request_parts = split(request_lines[0].c_str(), " ");
     //printf("get_file_hash_from_request, file_name=%s\n", get_request_parts[1].c_str()); // DEBUG
     return hasher(get_request_parts[1]);
 }
@@ -183,8 +193,7 @@ string parse_host(vector<string> request_lines, int option){
     for (string request_line : request_lines)
         if (!strncmp(request_line.c_str(), "Host:", 5))
             host = request_line.substr(6, request_line.length() -6 - 1);
-    vector<string> host_splitted;
-    boost::split(host_splitted, host, boost::is_any_of(":"));
+    vector<string> host_splitted = split(host.c_str(), ":");
     if (option == PARSE_ONLY_HOST)
         return host_splitted[0]; // return only host 
     else if (host_splitted.size() == 2)
@@ -437,8 +446,7 @@ void send_not_get_request_error(int socket_client){
 }
 
 void handle_client_request(int socket_client, const char *client_request){
-    vector<string> request_lines;
-    boost::split(request_lines, client_request, boost::is_any_of("\n"));
+    vector<string> request_lines = split(client_request, "\n");
     //printf("handle_client_request: At start, socket_client=%d\n", socket_client);
     //printf("handle_client_request: no modification client_request, \n-------\n%s\n-------\n", client_request);
     //First element of msg_parts is Type of Request
